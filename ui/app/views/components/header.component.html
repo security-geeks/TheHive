@@ -1,6 +1,37 @@
 <!--
-<nav class="navbar navbar-inverse navbar-fixed-top main-navbar" ng-if="!hideStatusBar" ng-show="currentUser.id" role="navigation">
+<a ui-sref="home" class="logo">
+    <span class="logo-mini"><b>C</b></span>
+    <span class="logo-lg">Cortex</span>
+</a>
+<nav class="navbar navbar-static-top" role="navigation">
+    <a href class="sidebar-toggle" data-toggle="offcanvas" role="button">
+        <span class="sr-only">Toggle navigation</span>
+    </a>
+</nav>
+-->
+<nav class="navbar navbar-static-top main-navbar" ng-controller="RootCtrl" ng-if="!hideStatusBar" ng-show="currentUser.id">
     <div class="container-fluid">
+        <!--
+        <div class="navbar-header">
+            <a href class="navbar-brand"><b>Cortex</b></a>
+            <button type="button" class="navbar-toggle collapsed" data-toggle="collapse" data-target="#navbar-collapse">
+				<i class="fa fa-bars"></i>
+			</button>
+        </div>
+        <div class="collapse navbar-collapse">
+            <ul class="nav navbar-nav pull-right">
+                <li>
+                    <a href ng-click="nav.newAnalysis()"><i class="fa fa-plus"></i> New Analysis</a>
+                </li>
+                <li ui-sref-active="active">
+                    <a ui-sref="analyzers"><i class="fa fa-cogs"></i> Analyzers</a>
+                </li>
+                <li ui-sref-active="active">
+                    <a ui-sref="jobs"><i class="fa fa-hourglass"></i> Jobs</a>
+                </li>
+            </ul>
+        </div>
+        -->
         <div class="navbar-header">
             <button aria-expanded="false" class="navbar-toggle collapsed" data-target="#th-navbar-collapse" data-toggle="collapse" type="button">
                 <span class="sr-only">Toggle navigation</span>
@@ -45,7 +76,7 @@
                 <li ng-show="mispEnabled === true" ui-sref-active="active">
                     <a href ui-sref="app.misp-list">
                         MISP
-                        <span class="badge alert-danger">{{(mispEvents.New.count || 0) + (mispEvents.Update.count || 0)}}</span>
+                        <span class="badge alert-danger">{{mispEvents.count}}</span>
                     </a>
                 </li>
                 <li class="hdivider hidden-xs"></li>
@@ -61,6 +92,7 @@
                         <i class="fa fa-circle-o-notch fa-spin"></i>
                     </a>
                 </li>
+
                 <li>
                     <form ng-submit="search(querystring)" style="margin-top : 10px">
                         <div class="input-group" style="width: 220px">
@@ -158,9 +190,6 @@
                 </li>
             </ul>
         </div>
+
     </div>
 </nav>
--->
-<div class="container-main">
-    <div ng-if="currentUser.id" ui-view></div>
-</div>
