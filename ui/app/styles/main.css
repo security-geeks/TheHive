@@ -446,3 +446,7 @@ table tr.tr-warning {
 table tr.tr-warning>td {
     background-color: #fcf8e3;
 }
+
+.box.box-navy {
+    border-top-color: #001f3f;
+}
