@@ -72,6 +72,9 @@ class CaseSrv @Inject() (
   def update(id: String, fields: Fields)(implicit authContext: AuthContext): Future[Case] =
     updateSrv[CaseModel, Case](caseModel, id, fields)
 
+  def update(caze: Case, fields: Fields)(implicit authContext: AuthContext): Future[Case] =
+    updateSrv(caze, fields)
+
   def bulkUpdate(ids: Seq[String], fields: Fields)(implicit authContext: AuthContext): Future[Seq[Try[Case]]] = {
     updateSrv[CaseModel, Case](caseModel, ids, fields)
   }
