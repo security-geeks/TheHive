@@ -28,16 +28,24 @@ import play.api.libs.ws.WSClientConfig
 import play.api.libs.ws.ahc.{ AhcWSAPI, AhcWSClientConfig }
 import play.api.libs.ws.ssl.{ SSLConfig, TrustManagerConfig, TrustStoreConfig }
 import play.api.{ Configuration, Environment, Logger }
-import services.{ AlertSrv, ArtifactSrv, CaseSrv, CaseTemplateSrv }
+import services.{ AlertSrv, ArtifactSrv, CaseSrv }
 
 import scala.concurrent.duration.{ DurationInt, DurationLong, FiniteDuration }
 import scala.concurrent.{ ExecutionContext, Future }
 import scala.util.{ Failure, Success, Try }
 
-case class MispInstanceConfig(name: String, url: String, key: String, caseTemplate: Option[String], artifactTags: Seq[String])
+case class MispInstanceConfig(
+  name: String,
+  url: String,
+  key: String,
+  caseTemplate: Option[String],
+  artifactTags: Seq[String])
 
 object MispInstanceConfig {
-  def apply(name: String, defaultCaseTemplate: Option[String], configuration: Configuration): Option[MispInstanceConfig] =
+  def apply(
+    name: String,
+    defaultCaseTemplate: Option[String],
+    configuration: Configuration): Option[MispInstanceConfig] =
     for {
       url ← configuration.getString("url")
       key ← configuration.getString("key")
@@ -49,7 +57,7 @@ case class MispConfig(truststore: Option[Path], interval: FiniteDuration, instan
 
   def this(configuration: Configuration, defaultCaseTemplate: Option[String]) = this(
     configuration.getString("misp.cert").map(p ⇒ Paths.get(p)),
-    configuration.getMilliseconds("misp.interval").map(_.millis).getOrElse(1.hour),
+    configuration.getMilliseconds("misp.interval").fold(1.hour)(_.millis),
     for {
       cfg ← configuration.getConfig("misp").toSeq
       key ← cfg.subKeys
@@ -67,14 +75,8 @@ class MispSrv @Inject() (
     alertSrvProvider: Provider[AlertSrv],
     caseSrv: CaseSrv,
     artifactSrv: ArtifactSrv,
-    createSrv: CreateSrv,
-    getSrv: GetSrv,
-    findSrv: FindSrv,
-    updateSrv: UpdateSrv,
     userSrv: UserSrv,
-    caseTemplateSrv: CaseTemplateSrv,
     attachmentSrv: AttachmentSrv,
-    caseModel: CaseModel,
     tempSrv: TempSrv,
     eventSrv: EventSrv,
     environment: Environment,
@@ -88,15 +90,19 @@ class MispSrv @Inject() (
 
   private[misp] val ws = {
     val config = mispConfig.truststore match {
-      case Some(p) ⇒ AhcWSClientConfig(wsClientConfig = WSClientConfig(ssl = SSLConfig(trustManagerConfig = TrustManagerConfig(trustStoreConfigs = Seq(TrustStoreConfig(filePath = Some(p.toString), data = None))))))
-      case None    ⇒ AhcWSClientConfig()
+      case Some(p) ⇒ AhcWSClientConfig(
+        wsClientConfig = WSClientConfig(
+          ssl = SSLConfig(
+            trustManagerConfig = TrustManagerConfig(
+              trustStoreConfigs = Seq(TrustStoreConfig(filePath = Some(p.toString), data = None))))))
+      case None ⇒ AhcWSClientConfig()
     }
     new AhcWSAPI(environment, config, lifecycle)
   }
 
   private[misp] def getInstanceConfig(name: String): Future[MispInstanceConfig] = mispConfig.instances
     .find(_.name == name)
-    .fold[Future[MispInstanceConfig]](Future.failed(NotFoundError(s"""Configuration of MISP server "${name}" not found"""))) { instanceConfig ⇒
+    .fold(Future.failed[MispInstanceConfig](NotFoundError(s"""Configuration of MISP server "${name}" not found"""))) { instanceConfig ⇒
       Future.successful(instanceConfig)
     }
 
@@ -105,7 +111,7 @@ class MispSrv @Inject() (
       logger.info("Update of MISP events is starting ...")
       userSrv
         .inInitAuthContext { implicit authContext ⇒
-          update().andThen { case _ ⇒ tempSrv.releaseTemporaryFiles() }
+          synchronize().andThen { case _ ⇒ tempSrv.releaseTemporaryFiles() }
         }
         .map(_.collect {
           case Failure(t) ⇒ logger.warn(s"Update MISP error", t)
@@ -139,7 +145,7 @@ class MispSrv @Inject() (
   }), classOf[UpdateMispAlertArtifact])
   logger.info("subscribe actor")
 
-  def update()(implicit authContext: AuthContext): Future[Seq[Try[Alert]]] = {
+  def synchronize()(implicit authContext: AuthContext): Future[Seq[Try[Alert]]] = {
     import org.elastic4play.services.QueryDSL._
 
     // for each MISP server
@@ -158,7 +164,9 @@ class MispSrv @Inject() (
       // get related alert
       .mapAsyncUnordered(5) {
         case (mcfg, lastSyncDate, event) ⇒
-          alertSrv.get("misp", event.source, event.sourceRef).map((mcfg, lastSyncDate, event, _))
+          alertSrv.get(s"misp:${event.eventUuid}")
+            .map(a ⇒ (mcfg, lastSyncDate, event, Some(a)))
+            .recover { case _ ⇒ (mcfg, lastSyncDate, event, None) }
       }
       .mapAsyncUnordered(5) {
         case (mcfg, lastSyncDate, event, alert) ⇒
@@ -168,8 +176,9 @@ class MispSrv @Inject() (
         // if there is no related alert, create a new one
         case (mcfg, _, event, None, attrs) ⇒
           val alertJson = Json.toJson(event).as[JsObject] +
+            ("_id" → JsString(s"misp:${event.eventUuid}")) +
             ("type" → JsString("misp")) +
-            //("caseTemplate" -> mcfg.caseTemplate)
+            ("caseTemplate" → mcfg.caseTemplate.fold[JsValue](JsNull)(JsString)) +
             ("artifacts" → JsArray(attrs)) +
             ("_id" → JsString(event.eventUuid))
           alertSrv.create(Fields(alertJson))
@@ -203,7 +212,6 @@ class MispSrv @Inject() (
           })
             .map(Success(_))
             .recover { case t ⇒ Failure(t) }
-
       }
       .runWith(Sink.seq)
   }
@@ -242,51 +250,90 @@ class MispSrv @Inject() (
       }
   }
 
-  def getAttributes(instanceConfig: MispInstanceConfig, eventId: String, fromDate: Option[Date]): Future[Seq[JsObject]] = {
-    val futureMispAttributes = ws
-      .url(s"${instanceConfig.url}/events/$eventId")
+  def getAttributes(
+    instanceConfig: MispInstanceConfig,
+    eventId: String,
+    fromDate: Option[Date]): Future[Seq[JsObject]] = {
+    val date = fromDate.fold("null") { fd ⇒
+      val dateFormat = new SimpleDateFormat("yyyy-MM-dd")
+      dateFormat.format(fd)
+    }
+    ws
+      .url(s"${instanceConfig.url}/events/restSearch/download/" +
+        s"null/null/null/null/null/null/$date/null/null/$eventId/false")
       .withHeaders(
         "Authorization" → instanceConfig.key,
         "Accept" → "application/json")
       .get()
-      .map {
-        response ⇒
-          (Json.parse(response.body) \ "Event" \ "Attribute").as[Seq[MispAttribute]]
+      .map { response ⇒
+        val refDate = fromDate.getOrElse(new Date(0))
+        val artifactTags = JsString(s"src:${instanceConfig.name}") +: JsArray(instanceConfig.artifactTags.map(JsString))
+        (Json.parse(response.body) \ "response" \\ "Attribute")
+          .flatMap(_.as[Seq[MispAttribute]])
+          .filter(_.date after refDate)
+          .flatMap {
+            case a if a.tpe == "attachment" || a.tpe == "malware-sample" ⇒
+              Seq(
+                Json.obj(
+                  "dataType" → "file",
+                  "message" → a.comment,
+                  "tags" → (artifactTags.value ++ a.tags.map(JsString)),
+                  "data" → Json.obj(
+                    "filename" → a.value,
+                    "attributeId" → a.id,
+                    "attributeType" → a.tpe).toString,
+                  "startDate" → a.date))
+            case a ⇒ convertAttribute(a).map { j ⇒
+              val tags = artifactTags ++ (j \ "tags").asOpt[JsArray].getOrElse(JsArray(Nil))
+              j.setIfAbsent("tlp", 2L) + ("tags" → tags)
+            }
+          }
       }
-    val refDate = fromDate.getOrElse(new Date(0))
-    for {
-      mispAttributes ← futureMispAttributes
-      artifactTags = JsString(s"src:${instanceConfig.name}") +: JsArray(instanceConfig.artifactTags.map(JsString))
-      attributes ← Future.traverse(mispAttributes.filter(_.date after refDate)) {
-        // FIXME
-        //          case a if a.tpe == "attachment" ⇒
-        //            downloadAttachment(instanceConfig, a.id)
-        //              .map { attachment ⇒
-        //                Seq(Fields.empty
-        //                  .set("dataType", "file")
-        //                  .set("message", a.comment)
-        //                  .set("tags", artifactTags)
-        //                  .set("attachment", attachment))
-        //              }
-        //              .recover { case _ ⇒ Nil }
-        //          case a if a.tpe == "malware-sample" ⇒
-        //            downloadAttachment(instanceConfig, a.id)
-        //              .map { attachment ⇒
-        //                Seq(Fields.empty
-        //                  .set("dataType", "file")
-        //                  .set("message", a.comment)
-        //                  .set("tags", artifactTags)
-        //                  .set("attachment", extractMalwareAttachment(attachment)))
-        //              }
-        //              .recover { case _ ⇒ Nil }
-        case a ⇒ Future.successful(convertAttribute(a).map { a ⇒
-          val tags = artifactTags ++ (a \ "tags").asOpt[JsArray].getOrElse(JsArray(Nil))
-          a.setIfAbsent("tlp", 2L) + ("tags" → tags)
-        })
+  }
+
+  def attributeToArtifact(
+    instanceConfig: MispInstanceConfig,
+    alert: Alert,
+    attr: JsObject)(implicit authContext: AuthContext): Option[Future[Fields]] = {
+    (for {
+      dataType ← (attr \ "dataType").validate[String]
+      data ← (attr \ "data").validate[String]
+      message ← (attr \ "message").validate[String]
+      startDate ← (attr \ "startDate").validate[Date]
+      attachment = dataType match {
+        case "file" ⇒
+          val json = Json.parse(data)
+          for {
+            attributeId ← (json \ "attributeId").asOpt[String]
+            attributeType ← (json \ "attributeType").asOpt[String]
+            fiv = downloadAttachment(instanceConfig, attributeId)
+          } yield if (attributeType == "malware-sample") fiv.map(extractMalwareAttachment)
+          else fiv
+        case _ ⇒ None
       }
-      artifactFields = attributes.flatten
-      //artifacts ← artifactSrv.create(caze, artifactFields)
-    } yield artifactFields
+      tags = (attr \ "tags").asOpt[Seq[String]].getOrElse(Nil)
+      tlp = tags.map(_.toLowerCase)
+        .collectFirst {
+          case "tlp:white" ⇒ JsNumber(0)
+          case "tlp:green" ⇒ JsNumber(1)
+          case "tlp:amber" ⇒ JsNumber(2)
+          case "tlp:red"   ⇒ JsNumber(3)
+        }
+        .getOrElse(JsNumber(alert.tlp()))
+      fields = Fields.empty
+        .set("dataType", dataType)
+        .set("message", message)
+        .set("startDate", Json.toJson(startDate))
+        .set("tags", Json.arr(tags.filterNot(_.toLowerCase.startsWith("tlp:"))))
+        .set("tlp", tlp)
+    } yield attachment.fold(Future.successful(fields.set("data", data)))(_.map { fiv ⇒
+      fields.set("attachment", fiv)
+    })) match {
+      case JsSuccess(r, _) ⇒ Some(r)
+      case e: JsError ⇒
+        logger.warn(s"Invalid attribute in alert ${alert.id}: $e\n$attr")
+        None
+    }
   }
 
   def createCase(alert: Alert)(implicit authContext: AuthContext): Future[Case] = {
@@ -295,9 +342,9 @@ class MispSrv @Inject() (
       case None ⇒
         for {
           instanceConfig ← getInstanceConfig(alert.source())
-          attributes ← getAttributes(instanceConfig, alert.sourceRef(), None)
           caze ← caseSrv.create(Fields(alert.toCaseJson))
-          createdArtifacts ← artifactSrv.create(caze, attributes.map(Fields.apply))
+          artifacts ← Future.sequence(alert.artifacts().flatMap(attributeToArtifact(instanceConfig, alert, _)))
+          _ ← artifactSrv.create(caze, artifacts)
         } yield caze
     }
   }
@@ -306,7 +353,7 @@ class MispSrv @Inject() (
   def updateMispAlertArtifact()(implicit authContext: AuthContext): Future[Unit] = {
     import org.elastic4play.services.QueryDSL._
     logger.info("Update MISP attributes in alerts")
-    val (alerts, total) = alertSrv.find("type" ~= "misp", Some("all"), Nil)
+    val (alerts, _) = alertSrv.find("type" ~= "misp", Some("all"), Nil)
     alerts.mapAsyncUnordered(5) { alert ⇒
       if (alert.artifacts().nonEmpty) {
         logger.info(s"alert ${alert.id} has artifacts, ignore it")
@@ -384,7 +431,9 @@ class MispSrv @Inject() (
     }
   }
 
-  def downloadAttachment(instanceConfig: MispInstanceConfig, attachmentId: String)(implicit authContext: AuthContext): Future[FileInputValue] = {
+  def downloadAttachment(
+    instanceConfig: MispInstanceConfig,
+    attachmentId: String)(implicit authContext: AuthContext): Future[FileInputValue] = {
     val fileNameExtractor = """attachment; filename="(.*)"""".r
 
     ws.url(s"${instanceConfig.url}/attributes/download/$attachmentId")
@@ -421,10 +470,12 @@ class MispSrv @Inject() (
   def convertAttribute(mispAttribute: MispAttribute): Seq[JsObject] = {
     val data = mispAttribute.value
     val filenameExtractor = "filename\\|(.*)".r
-    val fields = JsObject(Seq(
-      "data" → JsString(data),
-      "dataType" → JsString(mispAttribute.tpe),
-      "message" → JsString(mispAttribute.comment)))
+    val fields = Json.obj(
+      "data" → data,
+      "dataType" → mispAttribute.tpe,
+      "message" → mispAttribute.comment,
+      "startDate" → mispAttribute.date)
+
     mispAttribute.tpe match {
       case filenameExtractor(hashType) ⇒
         val Array(file, hash, _*) = (data + "|").split("\\|", 3).map(JsString)

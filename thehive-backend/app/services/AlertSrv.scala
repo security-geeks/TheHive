@@ -1,37 +1,19 @@
 package services
 
 import javax.inject.Inject
-import models.AlertModel
-import org.elastic4play.services.Agg
-import models.Alert
-import models.AlertModel
-import org.elastic4play.services.GetSrv
-import org.elastic4play.services.CreateSrv
-import org.elastic4play.services.UpdateSrv
-import org.elastic4play.services.DeleteSrv
-import org.elastic4play.services.FindSrv
-import org.elastic4play.services.QueryDef
-import akka.stream.scaladsl.Source
+
 import akka.NotUsed
-import scala.concurrent.Future
-import play.api.libs.json.JsObject
-import org.elastic4play.services.AuthContext
-import org.elastic4play.controllers.Fields
-import scala.util.Try
-import models.AlertStatus
-import play.api.libs.json.Json
-import org.elastic4play.services.QueryDSL
-import akka.stream.scaladsl.Sink
 import akka.stream.Materializer
-import models.Case
-import play.api.libs.json.JsNumber
-import play.api.libs.json.JsArray
-import play.api.libs.json.JsBoolean
-import models.CaseStatus
-import scala.concurrent.ExecutionContext
-import scala.util.Success
-import play.api.Configuration
+import akka.stream.scaladsl.{ Sink, Source }
 import connectors.ConnectorRouter
+import models._
+import org.elastic4play.controllers.Fields
+import org.elastic4play.services._
+import play.api.Configuration
+import play.api.libs.json.{ JsNumber, JsObject, Json }
+
+import scala.concurrent.{ ExecutionContext, Future }
+import scala.util.{ Success, Try }
 
 trait AlertTransformer {
   def createCase(alert: Alert)(implicit authContext: AuthContext): Future[Case]
@@ -90,8 +72,11 @@ class AlertSrv(
     getSrv[AlertModel, Alert](alertModel, id)
 
   def get(tpe: String, source: String, sourceRef: String): Future[Option[Alert]] = {
-    import QueryDSL._
-    findSrv[AlertModel, Alert](alertModel, and("type" ~= tpe, "source" ~= source, "sourceRef" ~= sourceRef), Some("0-1"), Nil)
+    import org.elastic4play.services.QueryDSL._
+    findSrv[AlertModel, Alert](
+      alertModel,
+      and("type" ~= tpe, "source" ~= source, "sourceRef" ~= sourceRef),
+      Some("0-1"), Nil)
       ._1
       .runWith(Sink.headOption)
   }
@@ -138,14 +123,17 @@ class AlertSrv(
           case _ ⇒
             getCaseTemplate(alert).flatMap { caseTemplate ⇒
               caseSrv.create(Fields.empty
-                .set("title", (caseTemplate.flatMap(_.titlePrefix()).getOrElse("") + s" #${alert.sourceRef()} " + alert.title()).trim)
+                .set("title", (caseTemplate
+                  .flatMap(_.titlePrefix())
+                  .getOrElse("") + s" #${alert.sourceRef()} " + alert.title())
+                  .trim)
                 .set("description", alert.description())
                 .set("severity", JsNumber(alert.severity()))
                 .set("tags", Json.arr(alert.tags()))
                 .set("tlp", JsNumber(alert.tlp()))
                 .set("status", CaseStatus.Open.toString))
                 .andThen {
-                  case Success(caze) ⇒ artifactSrv.create(caze, alert.artifacts().map(Fields.apply))
+                  case Success(_caze) ⇒ artifactSrv.create(_caze, alert.artifacts().map(Fields.apply))
                 }
             }
         }
@@ -165,15 +153,16 @@ class AlertSrv(
 
   def stats(queryDef: QueryDef, aggs: Seq[Agg]): Future[JsObject] = findSrv(alertModel, queryDef, aggs: _*)
 
-  def ignoreAlert(alertId: String)(implicit authContext: AuthContext) = {
+  def ignoreAlert(alertId: String)(implicit authContext: AuthContext): Future[Alert] = {
     updateSrv[AlertModel, Alert](alertModel, alertId, Fields(Json.obj("status" → AlertStatus.Ignore)))
   }
 
-  def setFollowAlert(alertId: String, follow: Boolean)(implicit authContext: AuthContext) = {
+  def setFollowAlert(alertId: String, follow: Boolean)(implicit authContext: AuthContext): Future[Alert] = {
     updateSrv[AlertModel, Alert](alertModel, alertId, Fields(Json.obj("follow" → follow)))
   }
 
-  def setCaseId(alertId: String, caseId: String)(implicit authContext: AuthContext) = {
-    updateSrv[AlertModel, Alert](alertModel, alertId, Fields(Json.obj("case" → caseId, "status" → AlertStatus.Imported)))
+  def setCaseId(alertId: String, caseId: String)(implicit authContext: AuthContext): Future[Alert] = {
+    updateSrv[AlertModel, Alert](alertModel, alertId,
+      Fields(Json.obj("case" → caseId, "status" → AlertStatus.Imported)))
   }
 }

@@ -8,12 +8,12 @@ import org.elastic4play.models.BaseModelDef
 import org.elastic4play.services._
 import org.elastic4play.utils
 import org.elastic4play.utils.RichJson
-import play.api.{Configuration, Logger}
+import play.api.{ Configuration, Logger }
 import play.api.libs.json.JsValue.jsValueToJsLookup
 import play.api.libs.json._
 
-import scala.collection.immutable.{Set => ISet}
-import scala.concurrent.{ExecutionContext, Future}
+import scala.collection.immutable.{ Set ⇒ ISet }
+import scala.concurrent.{ ExecutionContext, Future }
 import scala.math.BigDecimal.int2bigDecimal
 import scala.util.Try
 
@@ -32,7 +32,9 @@ class Migration(
     dblists: DBLists,
     eventSrv: EventSrv,
     ec: ExecutionContext,
-    materializer: Materializer) = this(configuration.getString("misp.caseTemplate"), models, dblists, eventSrv, ec, materializer)
+    materializer: Materializer) = {
+    this(configuration.getString("misp.caseTemplate"), models, dblists, eventSrv, ec, materializer)
+  }
 
   import org.elastic4play.services.Operation._
   val logger = Logger(getClass)
@@ -47,7 +49,8 @@ class Migration(
     }
     logger.info("Updating observable data type list")
     val dataTypes = dblists.apply("list_artifactDataType")
-    Future.sequence(Seq("filename", "fqdn", "url", "user-agent", "domain", "ip", "mail_subject", "hash", "mail", "registry", "uri_path", "regexp", "other", "file")
+    Future.sequence(Seq("filename", "fqdn", "url", "user-agent", "domain", "ip", "mail_subject", "hash", "mail",
+      "registry", "uri_path", "regexp", "other", "file")
       .map(dt ⇒ dataTypes.addItem(dt).recover { case _ ⇒ () }))
       .map(_ ⇒ ())
       .recover { case _ ⇒ () }
@@ -103,10 +106,10 @@ class Migration(
           (misp \ "caze").asOpt[JsString].fold(JsObject(Nil))(c ⇒ Json.obj("caze" → c)) ++
             Json.obj(
               "_type" → "alert",
-              "_id" → (misp \ "_id").as[JsString],
+              "_id" → ("misp:" + (misp \ "_id").as[String]),
               "type" → "misp",
               "source" → (misp \ "serverId").as[JsString],
-              "sourceRef" → eventId, // FIXME check eventId or _id ?
+              "sourceRef" → eventId,
               "date" → date,
               "lastSyncDate" → (misp \ "publishDate").as[Date],
               "title" → ("#" + eventId + " " + (misp \ "info").as[String]).trim,
@@ -163,7 +166,10 @@ class Migration(
           })
           .map { attributes ⇒
             // put audited attribute in details and unaudited in otherDetails
-            val otherDetails = (audit \ "otherDetails").asOpt[String].flatMap(od ⇒ Try(Json.parse(od).as[JsObject]).toOption).getOrElse(JsObject(Nil))
+            val otherDetails = (audit \ "otherDetails")
+              .asOpt[String]
+              .flatMap(od ⇒ Try(Json.parse(od).as[JsObject]).toOption)
+              .getOrElse(JsObject(Nil))
             val (in, notIn) = details.fields.partition(f ⇒ attributes.contains(f._1.split("\\.").head))
             val newOtherDetails = otherDetails ++ JsObject(notIn)
             audit + ("details" → JsObject(in)) + ("otherDetails" → JsString(newOtherDetails.toString.take(10000)))

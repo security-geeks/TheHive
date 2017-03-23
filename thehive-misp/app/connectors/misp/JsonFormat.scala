@@ -2,31 +2,12 @@ package connectors.misp
 
 import java.util.Date
 
-import play.api.libs.json._
+import org.elastic4play.JsonFormat.dateFormat
 import play.api.libs.json.JsLookupResult.jsLookupResultToJsLookup
 import play.api.libs.json.JsValue.jsValueToJsLookup
-import org.elastic4play.models.JsonFormat.enumFormat
-import org.elastic4play.JsonFormat.dateFormat
+import play.api.libs.json._
 
 object JsonFormat {
-  //  implicit val eventStatusFormat = enumFormat(EventStatus)
-  implicit val eventReads = Reads(json ⇒
-    for {
-      uuid ← (json \ "uuid").validate[String]
-      org ← (json \ "Orgc" \ "name").validate[String]
-      info ← (json \ "info").validate[String]
-      eventId ← (json \ "id").validate[String]
-      optTags ← (json \ "EventTag").validateOpt[Seq[JsValue]]
-      tags = optTags.toSeq.flatten.flatMap(t ⇒ (t \ "Tag" \ "name").asOpt[String])
-      attrCountStr ← (json \ "attribute_count").validate[String].recover { case _ ⇒ "0" }
-      attrCount = attrCountStr.toInt
-      timestamp ← (json \ "timestamp").validate[String]
-      date = new Date(timestamp.toLong * 1000)
-      publishTimestamp ← (json \ "publish_timestamp").validate[String]
-      publishDate = new Date(publishTimestamp.toLong * 1000)
-      threatLevel ← (json \ "threat_level_id").validate[String]
-      analysis ← (json \ "analysis").validate[String]
-    } yield MispEvent(uuid, "", eventId.toLong, org, info, tags, date, publishDate, attrCount, threatLevel.toInt, analysis.toInt))
 
   implicit val mispAlertReads = Reads { json ⇒
     for {
@@ -46,14 +27,11 @@ object JsonFormat {
         }
         .getOrElse(2L)
       alertTags = s"src:$org" +: tags.filterNot(_.toLowerCase.startsWith("tlp:"))
-      //      attrCountStr ← (json \ "attribute_count").validate[String].recover { case _ ⇒ "0" }
-      //      attrCount = attrCountStr.toInt
       timestamp ← (json \ "timestamp").validate[String]
       date = new Date(timestamp.toLong * 1000)
       publishTimestamp ← (json \ "publish_timestamp").validate[String]
       publishDate = new Date(publishTimestamp.toLong * 1000)
       threatLevel ← (json \ "threat_level_id").validate[String]
-      //      analysis ← (json \ "analysis").validate[String]
     } yield MispAlert(
       uuid,
       org,
@@ -65,12 +43,10 @@ object JsonFormat {
       threatLevel.toLong,
       alertTags,
       tlp,
-      Nil,
-      "") // FIXME)
+      "")
   }
 
   implicit val mispAlertWrites = Json.writes[MispAlert]
-  //implicit val eventWrites2 = Json.writes[MispEvent]
 
   implicit val attributeReads = Reads(json ⇒
     for {
@@ -78,10 +54,21 @@ object JsonFormat {
       tpe ← (json \ "type").validate[String]
       category ← (json \ "category").validate[String]
       uuid ← (json \ "uuid").validate[String]
-      eventId ← (json \ "id").validate[String]
+      eventId ← (json \ "id").validate[Long]
       timestamp ← (json \ "timestamp").validate[String]
       date = new Date(timestamp.toLong * 1000)
       comment ← (json \ "comment").validate[String]
       value ← (json \ "value").validate[String]
-    } yield MispAttribute(id, tpe, category, uuid, eventId.toLong, date, comment, value))
+      category ← (json \ "category").validate[String]
+      tags ← JsArray((json \ "EventTag" \\ "name")).validate[Seq[String]]
+    } yield MispAttribute(
+      id,
+      tpe,
+      category,
+      uuid,
+      eventId,
+      date,
+      comment,
+      value,
+      tags :+ s"MISP:category$category" :+ s"MISP:type=$tpe"))
 }

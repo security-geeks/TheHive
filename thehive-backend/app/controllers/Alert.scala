@@ -2,28 +2,19 @@ package controllers
 
 import javax.inject.{ Inject, Singleton }
 
-import scala.concurrent.{ ExecutionContext, Future }
-import scala.reflect.runtime.universe
-import scala.util.{ Failure, Success }
-
 import akka.stream.Materializer
-import akka.stream.scaladsl.Sink
-
+import org.elastic4play.controllers.{ Authenticated, FieldsBodyParser, Renderer }
+import org.elastic4play.models.JsonFormat.baseModelEntityWrites
+import org.elastic4play.services.JsonFormat.{ aggReads, queryReads }
+import org.elastic4play.services._
+import org.elastic4play.{ BadRequestError, Timed }
 import play.api.Logger
 import play.api.http.Status
-import play.api.libs.json.{ JsArray, JsObject, Json }
-import play.api.libs.json.Json.toJsFieldJsValueWrapper
+import play.api.libs.json.JsArray
 import play.api.mvc.Controller
+import services.AlertSrv
 
-import org.elastic4play.{ BadRequestError, CreateError, Timed }
-import org.elastic4play.controllers.{ Authenticated, FieldsBodyParser, Renderer }
-import org.elastic4play.models.JsonFormat.{ baseModelEntityWrites, multiFormat }
-import org.elastic4play.services.{ Agg, AuxSrv }
-import org.elastic4play.services.{ QueryDSL, QueryDef, Role }
-import org.elastic4play.services.JsonFormat.{ aggReads, queryReads }
-
-import models.{ Alert, AlertStatus }
-import services.{ AlertSrv, TaskSrv }
+import scala.concurrent.{ ExecutionContext, Future }
 import scala.util.Try
 
 @Singleton
@@ -53,7 +44,7 @@ class AlertCtrl @Inject() (
 
     for {
       alert ← alertSrv.get(id)
-      alertsWithStats ← auxSrv.apply(alert, 0, withStats.getOrElse(false), false)
+      alertsWithStats ← auxSrv.apply(alert, 0, withStats.getOrElse(false), removeUnaudited = false)
     } yield renderer.toOutput(OK, alertsWithStats)
   }
 
@@ -85,14 +76,16 @@ class AlertCtrl @Inject() (
     val withStats = request.body.getBoolean("nstats").getOrElse(false)
 
     val (alerts, total) = alertSrv.find(query, range, sort)
-    val alertsWithStats = auxSrv.apply(alerts, nparent, withStats, false)
+    val alertsWithStats = auxSrv.apply(alerts, nparent, withStats, removeUnaudited = false)
     renderer.toOutput(OK, alertsWithStats, total)
   }
 
   @Timed
   def stats() = authenticated(Role.read).async(fieldsBodyParser) { implicit request ⇒
-    val query = request.body.getValue("query").fold[QueryDef](QueryDSL.any)(_.as[QueryDef])
-    val aggs = request.body.getValue("stats").getOrElse(throw BadRequestError("Parameter \"stats\" is missing")).as[Seq[Agg]]
+    val query = request.body.getValue("query")
+      .fold[QueryDef](QueryDSL.any)(_.as[QueryDef])
+    val aggs = request.body.getValue("stats")
+      .getOrElse(throw BadRequestError("Parameter \"stats\" is missing")).as[Seq[Agg]]
     alertSrv.stats(query, aggs).map(s ⇒ Ok(s))
   }
 }

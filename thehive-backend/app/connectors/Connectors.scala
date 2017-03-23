@@ -2,16 +2,14 @@ package connectors
 
 import javax.inject.Inject
 
-import scala.collection.immutable
-
+import com.google.inject.AbstractModule
+import net.codingwell.scalaguice.{ ScalaModule, ScalaMultibinder }
 import play.api.libs.json.{ JsObject, Json }
 import play.api.mvc.{ Action, Results }
-import play.api.routing.{ Router, SimpleRouter }
 import play.api.routing.sird.UrlContext
+import play.api.routing.{ Router, SimpleRouter }
 
-import com.google.inject.AbstractModule
-
-import net.codingwell.scalaguice.{ ScalaModule, ScalaMultibinder }
+import scala.collection.immutable
 
 trait Connector {
   val name: String

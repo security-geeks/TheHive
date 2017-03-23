@@ -1,29 +1,26 @@
 package models
 
-import java.util.Date
+import javax.inject.{ Inject, Singleton }
 
-import org.elastic4play.models.{ AttributeDef, HiveEnumeration, AttributeFormat ⇒ F, AttributeOption ⇒ O }
 import models.JsonFormat.alertStatusFormat
-import javax.inject.Inject
-
-import org.elastic4play.models.ModelDef
-import services.AuditedModel
-import org.elastic4play.models.EntityDef
+import org.elastic4play.models.{ Attribute, AttributeDef, BaseEntity, EntityDef, HiveEnumeration, ModelDef }
+import org.elastic4play.models.{ AttributeFormat ⇒ F, AttributeOption ⇒ O }
 import play.api.Logger
-import play.api.libs.json.Json
-import javax.inject.Singleton
+import play.api.libs.json.{ JsObject, JsString, Json }
+import services.AuditedModel
 
-import play.api.libs.json.JsObject
-import org.elastic4play.models.Attribute
+import scala.concurrent.Future
 
 object AlertStatus extends Enumeration with HiveEnumeration {
   type Type = Value
   val New, Update, Ignore, Imported = Value
 }
 
-trait AlertAttributes { _: AttributeDef ⇒
+trait AlertAttributes {
+  _: AttributeDef ⇒
   def artifactAttributes: Seq[Attribute[_]]
 
+  val alertId = attribute("_id", F.stringFmt, "Alert id", O.readonly)
   val tpe = attribute("type", F.stringFmt, "Type of the alert", O.readonly)
   val source = attribute("source", F.stringFmt, "Source of the alert", O.readonly)
   val sourceRef = attribute("sourceRef", F.stringFmt, "Source reference of the alert", O.readonly)
@@ -42,16 +39,38 @@ trait AlertAttributes { _: AttributeDef ⇒
 }
 
 @Singleton
-class AlertModel @Inject() (artifactModel: ArtifactModel) extends ModelDef[AlertModel, Alert]("alert") with AlertAttributes with AuditedModel { alertModel ⇒
-  lazy val logger = Logger(getClass)
-  override val defaultSortBy = Seq("-date")
-  override val removeAttribute = Json.obj("status" → AlertStatus.Ignore)
-  def artifactAttributes = artifactModel.attributes
+class AlertModel @Inject() (artifactModel: ArtifactModel)
+    extends ModelDef[AlertModel, Alert]("alert")
+    with AlertAttributes
+    with AuditedModel {
+
+  private[AlertModel] lazy val logger = Logger(getClass)
+  override val defaultSortBy: Seq[String] = Seq("-date")
+  override val removeAttribute: JsObject = Json.obj("status" → AlertStatus.Ignore)
+
+  override def artifactAttributes: Seq[Attribute[_]] = artifactModel.attributes
+
+  override def creationHook(parent: Option[BaseEntity], attrs: JsObject): Future[JsObject] = {
+    Future.successful {
+      if (attrs.keys.contains("_id"))
+        attrs
+      else {
+        val tpe = (attrs \ "tpe").asOpt[String].getOrElse("<null>")
+        val source = (attrs \ "source").asOpt[String].getOrElse("<null>")
+        val sourceRef = (attrs \ "sourceRef").asOpt[String].getOrElse("<null>")
+        attrs + ("_id" → JsString(s"$tpe|$source|$sourceRef"))
+      }
+    }
+  }
 }
 
-class Alert(model: AlertModel, attributes: JsObject) extends EntityDef[AlertModel, Alert](model, attributes) with AlertAttributes {
-  def artifactAttributes = Nil
-  def toCaseJson = Json.obj(
+class Alert(model: AlertModel, attributes: JsObject)
+    extends EntityDef[AlertModel, Alert](model, attributes)
+    with AlertAttributes {
+
+  override def artifactAttributes: Seq[Attribute[_]] = Nil
+
+  def toCaseJson: JsObject = Json.obj(
     //"caseId" -> caseId,
     "title" → title(),
     "description" → description(),
